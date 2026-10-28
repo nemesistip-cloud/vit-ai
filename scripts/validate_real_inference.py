@@ -4,7 +4,7 @@
 This script will:
 - find models with state INFERENCE_READY
 - if none, report blockers
-- call /api/v1/infer via TestClient with a random feature vector
+- call /api/v1/infer via TestClient with a feature vector
 - validate output contract (probabilities if present)
 - report metrics counters before/after
 """
@@ -12,6 +12,12 @@ import os
 import sys
 import random
 import time
+from pathlib import Path
+
+# Ensure repo root is in python path
+repo_root = Path(__file__).resolve().parent.parent
+if str(repo_root) not in sys.path:
+    sys.path.insert(0, str(repo_root))
 
 API_KEY = os.getenv("VIT_AI_API_KEY", "vit-internal-key")
 os.environ.setdefault("VIT_AI_API_KEY", API_KEY)
@@ -60,13 +66,17 @@ if __name__ == '__main__':
     model_id = model['model_id']
     print('Selected model for test:', model_id, 'state=', model.get('state'))
 
-    # Build a simple feature payload. Try to use artifact feature columns if available
+    # Build a simple feature payload. Try to use artifact feature columns or sample if available
     artifact = registry.get_artifact(model_id, model.get('version'))
     features = None
     if artifact and isinstance(artifact._artifact, dict):
-        cols = artifact._artifact.get('feature_columns') or []
-        if cols:
-            features = [random.random() for _ in cols]
+        sample_input = artifact._artifact.get('sample_input')
+        if isinstance(sample_input, dict) and 'features' in sample_input:
+            features = sample_input['features']
+        else:
+            cols = artifact._artifact.get('feature_columns') or []
+            if cols:
+                features = [random.random() for _ in cols]
     if features is None:
         features = [random.random() for _ in range(10)]
 

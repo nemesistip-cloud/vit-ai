@@ -12,6 +12,11 @@ import time
 from pathlib import Path
 from typing import Dict, Any
 
+# Ensure repo root is in python path
+repo_root = Path(__file__).resolve().parent.parent
+if str(repo_root) not in sys.path:
+    sys.path.insert(0, str(repo_root))
+
 API_KEY = os.getenv("VIT_AI_API_KEY", "vit-internal-key")
 os.environ.setdefault("VIT_AI_API_KEY", API_KEY)
 
