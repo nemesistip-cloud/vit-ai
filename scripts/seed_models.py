@@ -1,31 +1,23 @@
 #!/usr/bin/env python3
-"""Seed VIT AI model artifacts — runs at Docker build time.
+"""Seed all 16 VIT model artifacts into MODEL_DIR using real CSV match data.
 
-Trains all 16 VIT ensemble models using real historical match data when
-available (CSV files in DATA_DIR), falling back to synthetic data otherwise.
-
-Real data schema expected in CSV files:
-  home_team, away_team, home_goals, away_goals, actual_outcome (H/D/A),
-  league, date, season, B365H, B365D, B365A
-
-Features engineered (10-dim):
-  0  home_elo        — ELO rating normalised to [0, 1]
-  1  away_elo
-  2  home_form       — rolling win-rate over last 5 matches
-  3  away_form
-  4  prob_home       — vig-free implied probability from Betfair odds
-  5  prob_draw
-  6  prob_away
-  7  home_goals_avg  — rolling avg goals scored, last 5 matches
-  8  away_goals_avg
-  9  h2h_home_rate   — historical H2H win rate for home team
+Reads historical match CSVs from DATA_DIR (or default fallbacks), engineers
+10-dimensional feature vectors + targets (3-class outcome, BTTS, Over/Under),
+trains all 16 model classifiers/shims, embeds sample_input vectors into artifact
+dictionaries, and dumps the resulting .pkl files into MODEL_DIR.
 """
+import glob
+import logging
 import os
 import sys
-import logging
-import glob
 from collections import defaultdict
 from pathlib import Path
+from typing import Any
+
+# Ensure repo root is in python path
+repo_root = Path(__file__).resolve().parent.parent
+if str(repo_root) not in sys.path:
+    sys.path.insert(0, str(repo_root))
 
 import joblib
 import numpy as np
@@ -49,6 +41,12 @@ MODEL_DIR = Path(os.getenv("MODEL_DIR", "/app/models"))
 DATA_DIR  = Path(os.getenv("DATA_DIR", "/app/data" if Path("/app/data").exists() else "data"))
 MODEL_DIR.mkdir(parents=True, exist_ok=True)
 
+FEATURE_COLUMNS = [
+    "home_elo", "away_elo", "home_form", "away_form",
+    "prob_home", "prob_draw", "prob_away",
+    "home_goals_avg", "away_goals_avg", "h2h_home_rate"
+]
+
 # ── Real data loading ─────────────────────────────────────────────────────────
 
 def _load_csvs() -> list[dict]:
@@ -66,7 +64,6 @@ def _load_csvs() -> list[dict]:
         "data/uploads/*.csv",
         "/app/data/*.csv",
         "/app/data/uploads/*.csv",
-        # Vitnetwork uploads path (used during local development)
         "/tmp/vit-core/vit/data/uploads/*.csv",
     ]
     files = []
@@ -234,6 +231,19 @@ def _build_models(xgb_cls):
     return models_3class, models_2class, models_rating
 
 
+# ── Save artifact bundle ──────────────────────────────────────────────────────
+
+def _save_artifact(model_id: str, clf: Any, sample_vec: list):
+    artifact_dict = {
+        "model": clf,
+        "feature_columns": FEATURE_COLUMNS,
+        "sample_input": {"features": [float(v) for v in sample_vec]},
+    }
+    path = MODEL_DIR / f"{model_id}.pkl"
+    joblib.dump(artifact_dict, path)
+    return path
+
+
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 def main():
@@ -247,6 +257,8 @@ def main():
     else:
         X, y3, y2 = _synthetic_data()
 
+    sample_vec = X[0].tolist() if len(X) > 0 else [0.75, 0.75, 0.5, 0.5, 0.45, 0.25, 0.30, 0.32, 0.28, 0.5]
+
     models_3class, models_2class, models_rating = _build_models(XGBClassifier)
 
     trained = errors = 0
@@ -254,8 +266,7 @@ def main():
     for name, clf in models_3class.items():
         try:
             clf.fit(X, y3)
-            path = MODEL_DIR / f"{name}.pkl"
-            joblib.dump(clf, path)
+            path = _save_artifact(name, clf, sample_vec)
             log.info("  ✓ %s → %s", name, path)
             trained += 1
         except Exception as e:
@@ -265,8 +276,7 @@ def main():
     for name, clf in models_2class.items():
         try:
             clf.fit(X, y2)
-            path = MODEL_DIR / f"{name}.pkl"
-            joblib.dump(clf, path)
+            path = _save_artifact(name, clf, sample_vec)
             log.info("  ✓ %s → %s", name, path)
             trained += 1
         except Exception as e:
@@ -276,8 +286,7 @@ def main():
     for name, clf in models_rating.items():
         try:
             clf.fit(X, y2.astype(float))
-            path = MODEL_DIR / f"{name}.pkl"
-            joblib.dump(clf, path)
+            path = _save_artifact(name, clf, sample_vec)
             log.info("  ✓ %s → %s", name, path)
             trained += 1
         except Exception as e:
